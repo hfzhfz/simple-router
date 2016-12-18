@@ -114,7 +114,7 @@ void sr_handle_ip_packet(struct sr_instance* sr,
   ip_hdr->ip_sum = 0;
   uint16_t new_sum = cksum(ether_payload, ip_hdr_len); /* Already in network byte order. */
   
-  if (new_sum != orig_sum) /*TODO!!!*/
+  if (new_sum != orig_sum) 
   {
     fprintf(stderr, "IP header checksum missmatch! orig: %d, new: %d\n", orig_sum, new_sum);
     return;
