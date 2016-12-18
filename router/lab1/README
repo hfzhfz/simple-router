@@ -1,0 +1,46 @@
+##################### Code Structure Overview ###################
+
+The function sr_handlepacket gets called from sr_read_from_server_expect in sr_vns_comm.c when a new packet comes in. We first identify whether it is an ARP packet or IP packet by checking ether_type in the ethernet frame header. We may simply drop the packet if it belongs to neither of them. Otherwise, function sr_handle_arp_packet or sr_handle_ip_packet will be called for further processing. 
+
+
+================= ARP Packet ====================
+We first check if this ARP packet is for me or for someone else. Then we check if it is an ARP request or an ARP reply by checking its opcode. Functions are implemented in sr_handle_arp_packet.
+
+------------ARP reply------------
+Since we have just get the reply with ip and mac addresses, we cache the arp (in sr_arpcache_insert), get the output interface (sr_get_interface) and send all the packets (sr_send_packet_wrapper) in queue that has the same destination address. Then we remove the packets that are already sent from the queue (sr_arpreq_destroy). 
+
+-----------ARP request-----------
+We construct an ARP reply message (send_arp_reply) and send it back (sr_send_packet).
+
+
+================= IP Packet ======================
+If a packet is ip packet, we first check its checksum and drop those with incorrect checksum. Then we check the destination ip address of the packet to see if it is for me (the router) or for someone else (sr_handle_ip_packet).
+
+---------IP packet for me--------
+We first check its protocol (sr_handle_ip_packet). If it is an ICMP packet, we send the icmp echo reply (sr_create_icmp_packet). If it is a TCP or UDP packet, we send the ICMP port unreachable message (sr_create_icmp_packet). However, when sending the icmp packet we cannot simply switch the source and destination address of the incoming packet because the next hop may not be the end point. We need to first check our cache for the ip and mac address mapping (sr_arpcache_lookup). If found, we send the packet with the mapping. If not, we need to put the packet to ARP cache (sr_arpcache_queuereq) for broadcasting every second in order to get the mac address of the next hop. 
+
+--------IP packet not for me-----
+We first check its TTL (sr_handle_ip_packet). If the TTL is less than or equal to one, we send icmp time-exceeded message (sr_create_icmp_packet) since it is not for me and we cannot forward it. Otherwise, we check the routing table and perform longest prefix match (longest_prefix_match). If we cannot find the destination address, an icmp message of network unreachable will be sent back (sr_create_icmp_packet). If found, we then forward the TCP/UDP packet to the next hop. Before forwarding, we need to check our ARP cache for the ip and mac mapping of next hop (sr_arq_lookup_and_send). If found, decrease ttl by one and forward. If not, we have to send arp request broadcast message every second (send_arp_request). If we don't receive any response after five broadcasts, we will remove the entry (handle_arpreq) and send the ICMP host unreachable message (sr_create_icmp_packet) back.
+
+
+
+######################## Design Decisions ########################
+1. ARP cache checking and ARP broadcast when sending back icmp messages
+Initially, we just swap the source and destination mac address of the incoming packet. But we later find that in real life the next hop may not be the destination. So we need to figure out the mac address from ARP cache or by ARP broadcast.
+
+2. Set time difference between current time and last sent time to be larger of equal to one
+Initially, we set the time difference to be larger than one. After running the online tester, we found that we always get network unreachable for host unreachable test. Thanks to one of classmate's answer on Piazza, we get to know that because of the feature of this version of C, the time difference would be much larger than one second if we set it to be larger than one second. I order to get exactly one second difference we need to add a condition of equality along with the larger.
+
+
+#################### Ambiguities in Assignment ###################
+1. The source address of icmp messages
+At the beginning we just randomly pick one from the three as source address. After comparing the packet with sr_soluiton on wireshark, we found that the source address should be the same as the ip of its incoming interface when it comes in. We solved it by using sr_get_interface function to get the interface struct with related ip address.
+
+2. The source address of host unreachable
+The source address of host unreachable should be set to the destination interface ip instead of its incoming interface ip. It is also found by comparing the packet with sr_soluiton on wireshark. We solved it by using longest prefix matching to find the interface name and use sr_get_interface function to get the interface struct with related ip address.
+
+3. htons
+During the tutorial, we are warned to pay attention to the big endian and little endian caused by difference between host and network. But it was not clearly stated which section should be converted and which should not. We solved it basically by following the functions in sr_utils.c and by comparing the packet bits with sr_solution on wireshark.
+
+4. Data section of icmp port unreachable
+It was not clearly stated that there are actually three checksums to be compared for icmp messages sent back (except echo). They are ip header checksum, icmp header checksum and the recalculated old ip header checksum (after decrease ttl by 1) which is copied into the data section of new icmp message. If the third checksum is incorrect, the packet would simply be dropped by the client and an error of no packets received is generated when we run icmp tests on online tester. This detail was found also by comparing the packet bits with sr_solution on wireshark.
